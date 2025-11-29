@@ -2,7 +2,8 @@ import env from "#config/env/env.js";
 import knex, { migrate, seed } from "#postgres/knex.js";
 import { google } from "googleapis";
 import pg from "pg";
-import crypto from "crypto";
+import { hashObject } from "./utils/hash.js";
+import { getToday, getTime } from "./utils/dates.js";
 
 console.log("START");
 
@@ -22,32 +23,12 @@ const SORTFULL = `boxDeliveryLiter`; // Тут ничего не трогаем!
 async function main() {
     // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------------------------V
     type Row = (string | number | null)[];
-    function getCurrentTime(): string {
-        return new Date().toLocaleTimeString("en-GB", {
-            hour12: false,
-            timeZone: "Asia/Almaty", // твоя зона, чтобы день и время совпадали
-        });
-    }
-    function getToday(): string {
-        return new Date().toLocaleDateString("en-CA", {
-            timeZone: "Asia/Almaty", // или нужный тебе город
-        });
-    }
 
-    function fixFloat(val: string | null | undefined): number | null {
-        if (!val || val === "-" || val.trim() === "") return null;
-        return Number(val.replace(",", "."));
-    }
-
-    function fixInt(val: string | null | undefined): number | null {
-        if (!val || val === "-" || val.trim() === "") return null;
-        return parseInt(val, 10);
-    }
-
-    function fixDate(val: string | null | undefined): string | null {
-        if (!val || val.trim() === "" || val === "-") return null;
-        return val;
-    }
+    const clean = {
+        float: (v: string | null | undefined) => (!v || v === "-" ? null : Number(v.toString().replace(",", "."))),
+        int: (v: string | null | undefined) => (!v || v === "-" ? null : parseInt(v, 10)),
+        date: (v: string | null | undefined) => (!v || v === "-" ? null : v),
+    };
 
     async function pushWarehouse(warehouse: any) {
         // Асинхронная функция для добавления в БД (для цикла)
@@ -56,23 +37,6 @@ async function main() {
         } catch (err) {
             console.error("Error inserting warehouse:", err);
         }
-    }
-
-    function hashObject(obj) {
-        // сортируем ключи, чтобы хеш всегда был одинаковый
-
-        const ordered = Object.keys(obj)
-            .sort()
-            .reduce((acc, key) => {
-                acc[key] = obj[key];
-                return acc;
-            }, {});
-
-        const str = JSON.stringify(ordered);
-
-        // console.log("Сейчас прогоняем вот такой обьект через хэш",str);
-        // console.log("Получился хэш:",crypto.createHash("sha256").update(str).digest("hex"));
-        return crypto.createHash("sha256").update(str).digest("hex");
     }
 
     async function getDataFromApi(today: string) {
@@ -253,9 +217,9 @@ async function main() {
             const warehouse = {
                 warehouseName: item.warehouseName || null,
                 geoName: item.geoName || null,
-                boxDeliveryLiter: fixFloat(item.boxDeliveryLiter),
+                boxDeliveryLiter: clean.float(item.boxDeliveryLiter),
 
-                recordTime: getCurrentTime(),
+                recordTime: getTime(),
                 recordDate: today, //today,
 
                 hash,
@@ -312,9 +276,9 @@ async function main() {
                     const newWarehouse = {
                         warehouseName: apiItem.warehouseName || null,
                         geoName: apiItem.geoName || null,
-                        boxDeliveryLiter: fixFloat(apiItem.boxDeliveryLiter),
+                        boxDeliveryLiter: clean.float(apiItem.boxDeliveryLiter),
 
-                        recordTime: getCurrentTime(),
+                        recordTime: getTime(),
                         recordDate: getToday(), //today,
 
                         hash: hashAPI,
@@ -337,9 +301,9 @@ async function main() {
                 const newWarehouse = {
                     warehouseName: apiItem.warehouseName || null,
                     geoName: apiItem.geoName || null,
-                    boxDeliveryLiter: fixFloat(apiItem.boxDeliveryLiter),
+                    boxDeliveryLiter: clean.float(apiItem.boxDeliveryLiter),
 
-                    recordTime: getCurrentTime(),
+                    recordTime: getTime(),
                     recordDate: getToday(), //today,
 
                     hash: hashAPI,
