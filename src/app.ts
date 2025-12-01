@@ -1,25 +1,20 @@
-import env from "#config/env/env.js";
-import knex, { migrate, seed } from "#postgres/knex.js";
-import { google } from "googleapis";
+import knex from "#postgres/knex.js";
 import pg from "pg";
 import { hashObject } from "./utils/hash.js";
 import { getToday, getTime } from "./utils/dates.js";
+import { Sheets } from "./utils/sheets.service.js";
+import env from "#config/env/env.js";
+
+// ТУТ НУЖНО УКАЗАТЬ ПАРАМЕТР СОРТИРОВКИ
+const SORTFULL = `boxDeliveryLiter`; //  boxDeliveryCoefExpr || boxDeliveryMarketplaceCoefExpr || boxStorageCoefExpr
 
 console.log("START");
-
 // Отключаем автоматическое преобразование PostgreSQL DATE в объект JS Date. Не даём драйверу pg добавлять время и смещать дату по часовому поясу.
 // Теперь DATE всегда приходит как обычная строка "YYYY-MM-DD". (Ранее из за этого смещались даты. )
 pg.types.setTypeParser(1082, (value) => value);
 pg.types.setTypeParser(1083, (value) => value);
 
-// ТУТ НУЖНО УКАЗАТЬ ПАРАМЕТР СОРТИРОВКИ
-const SORT = "DeliveryMarketplace"; // Тут выбираем и подставляем: Delivery||DeliveryMarketplace||Storage
-// const SORTFULL = `box${SORT}CoefExpr`; // Тут ничего не трогаем! Получиться: boxDeliveryCoefExpr || boxDeliveryMarketplaceCoefExpr || boxStorageCoefExpr
-const SORTFULL = `boxDeliveryLiter`; // Тут ничего не трогаем! Получиться: boxDeliveryCoefExpr || boxDeliveryMarketplaceCoefExpr || boxStorageCoefExpr
 
-// await updateDailyData()
-// await dbToSheet();
-//   Каждый час:
 async function main() {
     // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------------------------V
     type Row = (string | number | null)[];
@@ -34,20 +29,26 @@ async function main() {
         // Асинхронная функция для добавления в БД (для цикла)
         try {
             await knex("warehouseList").insert(warehouse);
+            console.log("[DB] Inserted.");
         } catch (err) {
-            console.error("Error inserting warehouse:", err);
+            console.error("[DB] Insert error:", err);
         }
     }
 
     async function getDataFromApi(today: string) {
         try {
+            console.log("[API] Fetching...");
             const res = await fetch(`https://common-api.wildberries.ru/api/v1/tariffs/box?date=${today}`, {
                 method: "GET",
                 headers: {
                     "Authorization": `${env.WILDBERRIES_KEY}`,
                 },
             });
+            // const res = await fetch(`https://964a3c49-a63b-402f-87c1-0fc8c7067472.mock.pstmn.io/Housess`, {
+            //     method: "GET",
+            // })
             const data = await res.json();
+            console.log("[API] OK");
             return data;
         } catch (err) {
             console.error(err);
@@ -55,161 +56,65 @@ async function main() {
         }
     }
 
-    function googleAuth() {
-        const auth = new google.auth.GoogleAuth({
-            keyFile: env.SERVICE_ACCOUNT_JSON, // JSON с сервисного аккаунта, должен быть в корне проекта
-            scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-        });
-        const sheets = google.sheets({ version: "v4", auth });
-        return sheets;
-    }
-
+    //Функция добавления данных за один день в гугл таблицу
     async function addDateInSheets(dataDB: any[]) {
-        //Функция добавления данных за один день в гугл таблицу
-        const sheets = googleAuth();
-        const spreadsheetId = env.SPREADSHEET_ID;
-
         const dailyDataForSheets: Row[] = [
-            [dataDB[0].recordDate],
-            [
-                "",
-                "warehouseId", // "warehouseId",
-
-                "warehouseName", // "recordDate",
-                "geoName", // "geoName",
-                "boxDeliveryLiter", // "boxDeliveryLiter",
-
-                "recordTime", // "recordTime",
-                "recordDate", // "recordDate",
-            ],
+            [dataDB[0]?.recordDate],
+            ["","warehouseId","warehouseName","geoName","boxDeliveryLiter","recordTime","recordDate",],
+            ...dataDB.map((item) => ["", item.warehouseId, item.warehouseName, item.geoName, item.boxDeliveryLiter, item.recordTime, item.recordDate]),
         ];
-        dataDB.forEach((item) => {
-            dailyDataForSheets.push(["", item.warehouseId, item.warehouseName, item.geoName, item.boxDeliveryLiter, item.recordTime, item.recordDate]);
-        });
-        const lengthDataForSheets = dataDB.length + 2; // +1 потому что заголовок включен в dailyDataForSheets
-        console.log(`aDIS: Длина данных для гугл таблицы: ${lengthDataForSheets} строк...`);
-        // ДВИГАЕМ Вставляем новые ПУСТЫЕ строки сверху
 
-        await sheets.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: {
-                requests: [
-                    {
-                        insertDimension: {
-                            range: {
-                                sheetId: 0,
-                                dimension: "ROWS",
-                                startIndex: 0, // начиная с первой строки
-                                endIndex: lengthDataForSheets, // на сколько строк вниз сдвинуть (totalRowsToInsert - Итоговое количество строк для вставки)
-                            },
-                            inheritFromBefore: false,
-                        },
-                    },
-                ],
-            },
-        });
-        console.log(`aDIS: Данные сдвинуты на ${lengthDataForSheets} строк`);
-        console.log("aDIS: пишем данные...");
-        await sheets.spreadsheets.values.update({
-            spreadsheetId,
-            range: "Лист1!A1",
-            valueInputOption: "RAW",
-            requestBody: { values: dailyDataForSheets },
-        });
-        console.log("aDIS: записали данные");
+        // ДВИГАЕМ Вставляем новые ПУСТЫЕ строки сверху
+        const lengthDataForSheets = dataDB.length + 2; // +1 потому что заголовок включен в dailyDataForSheets
+        console.log(`[SHEETS] Insert ${lengthDataForSheets} rows...`);
+        await Sheets.insertRows(lengthDataForSheets);
+
+        console.log("[SHEETS] Writing...");
+        await Sheets.write(dailyDataForSheets);
+        console.log("[SHEETS] Updated.");
     }
     async function deleteDateInSheets(dataDB: any[]) {
         //Функция удаления данных за один день в гугл таблице
-        const sheets = googleAuth();
-        const spreadsheetId = env.SPREADSHEET_ID;
         const numRowsToDelete = dataDB.length + 2; // +2 на заголовки и дату
-        console.log(`Удаляем сверху ${numRowsToDelete} строк`);
+        console.log(`[SHEETS] Deleting ${numRowsToDelete} rows...`);
 
-        await sheets.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: {
-                requests: [
-                    {
-                        deleteDimension: {
-                            range: {
-                                sheetId: 0,
-                                dimension: "ROWS",
-                                startIndex: 0, // начиная с первой строки
-                                endIndex: numRowsToDelete, // на сколько строк вниз удалить
-                            },
-                        },
-                    },
-                ],
-            },
-        });
-        console.log("Удалили");
+        await Sheets.deleteRows(numRowsToDelete)
+        console.log("[SHEETS] Deleted.");
     }
+    
     async function updateGoogleSheetsFromDB(allDatesInDB: string[]) {
-        console.log("uGSFDB: Начинаем актуализацию Google Sheets...");
-
-        const sheets = googleAuth();
-        const spreadsheetId = env.SPREADSHEET_ID;
-        console.log("uGSFDB:  Удаляем все строки в гугл таблице...");
-        const totalRowsToDelete =
-            (
-                await sheets.spreadsheets.values.get({
-                    // Получаем общее количество строк в таблице
-                    spreadsheetId,
-                    range: "Лист1!A:G",
-                })
-            ).data.values?.length || 0;
-
+        console.log("[SHEETS] Full rebuild start...");
+        const totalRowsToDelete = await Sheets.getRowCount("Лист1!A:G");
         if (totalRowsToDelete > 0) {
-            await sheets.spreadsheets.batchUpdate({
-                spreadsheetId,
-                requestBody: {
-                    requests: [
-                        {
-                            deleteDimension: {
-                                range: {
-                                    sheetId: 0,
-                                    dimension: "ROWS",
-                                    startIndex: 0, // начиная с первой строки
-                                    endIndex: totalRowsToDelete, // на сколько строк вниз удалить
-                                },
-                            },
-                        },
-                    ],
-                },
-            });
-            console.log(`uGSFDB:  Удалено строк: ${totalRowsToDelete}`);
-        } else {
-            console.log("uGSFDB:  В гугл таблице нет строк для удаления");
+            console.log(`[SHEETS] Clearing ${totalRowsToDelete} rows...`);
+            await Sheets.deleteRows(totalRowsToDelete)
         }
-        console.log("uGSFDB:  Заполняем Sheets из БД...");
 
         for (const date of allDatesInDB) {
-            console.log(`uGSFDB:   Добавляем дату ${date} в гугл таблицу...`);
+            console.log(`[SHEETS] Add date ${date}...`);
             const dataDB = await knex("warehouseList").where("recordDate", date).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
             await addDateInSheets(dataDB);
-            console.log(`uGSFDB:   Дата ${date} добавлена в гугл таблицу`);
         }
-        console.log("uGSFDB:  Актуализация Google Sheets завершена.");
+        console.log("[SHEETS] Full rebuild done.");
     }
     // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------------------------^
+
+    console.log("[MAIN] Start...");
     const allDatesInDB = await knex("warehouseList").distinct("recordDate").orderBy("recordDate", "asc").pluck("recordDate");
-    console.log(`main: Даты в БД: ${allDatesInDB}`);
 
     // Актуализируем Google Sheets из БД
-    await updateGoogleSheetsFromDB(allDatesInDB);
+    // await updateGoogleSheetsFromDB(allDatesInDB);
 
     // Проверяем есть ли в бд сегодня
-    // const today = "2025-11-27" //Debug: заполнение старыми
     const today = getToday();
-    console.log(`main: Сегодня: ${today}, обновляем данные за сегодня...`);
+    console.log(`[MAIN] Today: ${today}`);
     const dataFromApi = await getDataFromApi(today);
 
     // Проверить «есть ли в БД сегодня»
-    console.log(`main: Даты в бд: ${allDatesInDB}`);
     // «есть ли в БД сегодня» Если нет → вставить → обновить таблицу
     if (!allDatesInDB.includes(today)) {
         // Если нет → вставить → обновить таблицу
-        console.log("Добавляем сегодняшний день - его нет в БД");
+        console.log("[MAIN] No data for today — inserting.");
         dataFromApi?.response?.data?.warehouseList?.forEach((item: any) => {
             const { warehouseName, geoName, boxDeliveryLiter } = item;
             const hash = hashObject({ warehouseName, geoName, boxDeliveryLiter });
@@ -220,29 +125,29 @@ async function main() {
                 boxDeliveryLiter: clean.float(item.boxDeliveryLiter),
 
                 recordTime: getTime(),
-                recordDate: today, //today,
+                recordDate: today,
 
                 hash,
             };
             pushWarehouse(warehouse);
         });
         //Обновить таблицу (Сдвигаем что есть вниз, добавляем новые сверху)
-        console.log(`Данные за сегодня (${today}) добавлены в бд`);
+        console.log("[MAIN] Inserted new entries for today.");
         //--------------------------------------------------------------
         //Можно заполнять гугл таблицу без отдельного запроса к бд, но мы будем делать запрос к бд
         const dataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
-        // console.log("dataDB: ", dataDB);
         //--------------------------------------------------------------
-        console.log("Начинаем обновление гугл таблицы...");
+        console.log("[SHEETS] Updating...");
         await addDateInSheets(dataDB);
-        console.log("Гугл таблица обновлена, конец");
+
+        console.log("[MAIN] Done.");
+        return
     } else {
-        console.log(`main: Данные в бд за сегодня ${today} есть, начинаем обновление...`);
+        console.log("[MAIN] Today's data exists — checking changes...");
+        let updatedVariable: Boolean = false
 
         //Получаем данные из бд за сегодня
         const dataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
-
-        // console.log("dataDB: ",dataDB);
 
         const dataAPI: any[] = [];
         dataFromApi?.response?.data?.warehouseList?.forEach((item: any) => {
@@ -254,12 +159,7 @@ async function main() {
         });
 
         const dbMap = new Map(dataDB.map((item) => [item.warehouseName, item]));
-        //   'Old Name 1' => {
-        //     id: 1,
-        //     name: 'Old Name 1',...
-
         const apiNames = new Set(dataAPI.map((item) => item.warehouseName));
-        // apiNames: Set(3) { 'Old Name 1', 'Old Name 2', 'Old Name 3' }
 
         // 1. UPDATE + INSERT
         for (const apiItem of dataAPI) {
@@ -270,9 +170,8 @@ async function main() {
                 const hashAPI = hashObject({ warehouseName, geoName, boxDeliveryLiter }); // считаем хеш для новых данных из АПИ
 
                 if (dbItem.hash !== hashAPI) {
-                    // проверяем хеши,
-                    // если значения разные
-                    console.log(`UPDATE id: ${dbItem.warehouseId}`);
+                    // проверяем хеши, если значения разные
+                    console.log(`[DB] Update id=${dbItem.warehouseId}`);
                     const newWarehouse = {
                         warehouseName: apiItem.warehouseName || null,
                         geoName: apiItem.geoName || null,
@@ -283,18 +182,18 @@ async function main() {
 
                         hash: hashAPI,
                     };
-                    console.log(`Обновляем id: ${dbItem.warehouseId} новыми данными: ${JSON.stringify(newWarehouse)}`);
+
                     await knex("warehouseList")
                         .where("warehouseId", dbItem.warehouseId)
                         .update(newWarehouse)
                         .catch((err) => {
-                            console.error("Error updating warehouse:", err);
+                            console.error("[DB] Update error:", err);
                         });
-                    console.log(`DONE: Обновили id: ${dbItem.warehouseId} новыми данными: ${JSON.stringify(newWarehouse)}`);
+                    updatedVariable = true
                 }
             } else {
                 // проверяем есть ли такой name в БД (НЕТУ)
-                console.log(`НОВАЯ ЗАПИСЬ: ${apiItem.warehouseName}, добавляем в БД`);
+                console.log(`[DB] Insert new: ${apiItem.warehouseName}`);
                 const { warehouseName, geoName, boxDeliveryLiter } = apiItem;
                 const hashAPI = hashObject({ warehouseName, geoName, boxDeliveryLiter }); // считаем хеш для новых данных из АПИ
 
@@ -312,35 +211,42 @@ async function main() {
                 await knex("warehouseList")
                     .insert(newWarehouse)
                     .catch((err) => {
-                        console.error("Error inserting new warehouse:", err);
+                        console.error("[DB] Insert error:", err);
                     });
-                console.log(`DONE: Вставили новую запись: ${JSON.stringify(newWarehouse)}`);
+                    
+                updatedVariable = true
             }
         }
 
         // 2. DELETE — всё что есть в DB, но отсутствует в API
         for (let i = dataDB.length - 1; i >= 0; i--) {
             if (!apiNames.has(dataDB[i].warehouseName)) {
-                console.log(`Удаляем запись из БД с id: ${dataDB[i].warehouseId}, этого нет в API(удаляем): ${dataDB[i]}`);
+                console.log(`[DB] Delete id=${dataDB[i].warehouseId}`);
+
                 await knex("warehouseList")
                     .where("warehouseId", dataDB[i].warehouseId)
                     .del()
                     .catch((err) => {
-                        console.error("Error deleting warehouse:", err);
+                        console.error("[DB] Delete error:", err);
                     });
-                console.log(`DONE: Удалили запись из БД с id: ${dataDB[i].warehouseId}, этого нет в API(удаляем): ${dataDB[i]}`);
+
+                updatedVariable = true
             }
         }
 
-        console.log("main: Бд актуальна за сегодня");
+        console.log("[MAIN] DB OK");
 
-        // Тут перерисовываем новый день гугл таблицы
-        console.log("main: Начинаем актуализацию Google Sheets...");
+    // Тут перерисовываем новый день гугл таблицы
+    if(updatedVariable){
+        console.log("[MAIN] Today's data changed — updating Google Sheets.");
         const updatedDataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
         await deleteDateInSheets(dataDB);
         await addDateInSheets(updatedDataDB);
-
-        console.log("main:  Актуализация Google Sheets завершена.");
+        updatedVariable = false
+    }else{
+        console.log("[MAIN] Today's data unchanged — Sheets update skipped.");
+    }
+    console.log("[MAIN] Done.");
     }
 }
 
