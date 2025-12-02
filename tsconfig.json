@@ -14,7 +14,8 @@
                 "./src/*",
                 "./dist/*"
             ]
-        }
+        },
+        "noImplicitAny": true
     },
     "include": [
         "src/**/*.ts",

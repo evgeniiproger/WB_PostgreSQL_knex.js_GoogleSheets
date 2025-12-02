@@ -4,16 +4,16 @@ import { hashObject } from "./utils/hash.js";
 import { getToday, getTime } from "./utils/dates.js";
 import { Sheets } from "./utils/sheets.service.js";
 import env from "#config/env/env.js";
-
+import { apiResponseSchema, ApiResponse } from "./utils/types/api.js";
+import { warehouseDbSchema, WarehouseFromDb, warehouseInsertSchema, WarehouseForInsert } from "./utils/types/db.js";
 // ТУТ НУЖНО УКАЗАТЬ ПАРАМЕТР СОРТИРОВКИ
-const SORTFULL = `boxDeliveryLiter`; //  boxDeliveryCoefExpr || boxDeliveryMarketplaceCoefExpr || boxStorageCoefExpr
+const SORTFULL : string = `boxDeliveryLiter`; //  boxDeliveryCoefExpr || boxDeliveryMarketplaceCoefExpr || boxStorageCoefExpr
 
 console.log("START");
 // Отключаем автоматическое преобразование PostgreSQL DATE в объект JS Date. Не даём драйверу pg добавлять время и смещать дату по часовому поясу.
 // Теперь DATE всегда приходит как обычная строка "YYYY-MM-DD". (Ранее из за этого смещались даты. )
 pg.types.setTypeParser(1082, (value) => value);
 pg.types.setTypeParser(1083, (value) => value);
-
 
 async function main() {
     // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -------------------------------------------V
@@ -25,7 +25,7 @@ async function main() {
         date: (v: string | null | undefined) => (!v || v === "-" ? null : v),
     };
 
-    async function pushWarehouse(warehouse: any) {
+    async function pushWarehouse(warehouse: WarehouseForInsert) {
         // Асинхронная функция для добавления в БД (для цикла)
         try {
             await knex("warehouseList").insert(warehouse);
@@ -34,8 +34,11 @@ async function main() {
             console.error("[DB] Insert error:", err);
         }
     }
+    // const res = await fetch(`https://964a3c49-a63b-402f-87c1-0fc8c7067472.mock.pstmn.io/Housess`, {
+    //     method: "GET",
+    // })
 
-    async function getDataFromApi(today: string) {
+    async function getDataFromApi(today: string):Promise<ApiResponse> {
         try {
             console.log("[API] Fetching...");
             const res = await fetch(`https://common-api.wildberries.ru/api/v1/tariffs/box?date=${today}`, {
@@ -44,10 +47,32 @@ async function main() {
                     "Authorization": `${env.WILDBERRIES_KEY}`,
                 },
             });
-            // const res = await fetch(`https://964a3c49-a63b-402f-87c1-0fc8c7067472.mock.pstmn.io/Housess`, {
-            //     method: "GET",
-            // })
-            const data = await res.json();
+            // const resMockData = {                
+            //         response: {
+            //             data: {                            
+            //                 dtNextBox: '',
+            //                 dtTillMax: '2025-12-02',
+            //                 warehouseList: [
+            //                     {
+            //                         boxDeliveryBase: "46",
+            //                         boxDeliveryCoefExpr: "100",
+            //                         boxDeliveryLiter: "2",
+            //                         boxDeliveryMarketplaceBase: "-",
+            //                         boxDeliveryMarketplaceCoefExpr: "-",
+            //                         boxDeliveryMarketplaceLiter: "-",
+            //                         boxStorageBase: "0,07",
+            //                         boxStorageCoefExpr: "100",
+            //                         boxStorageLiter: "0,07",
+            //                         geoName: "Местоположение склада",
+            //                         warehouseName: "Какой-то склад"
+            //                     }
+            //                 ]
+            //             }
+            //         }
+               
+            // } satisfies ApiResponse;
+
+            const data = apiResponseSchema.parse(await res.json());
             console.log("[API] OK");
             return data;
         } catch (err) {
@@ -92,8 +117,9 @@ async function main() {
 
         for (const date of allDatesInDB) {
             console.log(`[SHEETS] Add date ${date}...`);
-            const dataDB = await knex("warehouseList").where("recordDate", date).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
-            await addDateInSheets(dataDB);
+            const dataDB = await knex<WarehouseFromDb>("warehouseList").where("recordDate", date).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
+            const checkedData = dataDB.map(row => warehouseDbSchema.parse(row));
+            await addDateInSheets(checkedData);
         }
         console.log("[SHEETS] Full rebuild done.");
     }
@@ -103,34 +129,47 @@ async function main() {
     const allDatesInDB = await knex("warehouseList").distinct("recordDate").orderBy("recordDate", "asc").pluck("recordDate");
 
     // Актуализируем Google Sheets из БД
-    // await updateGoogleSheetsFromDB(allDatesInDB);
+    await updateGoogleSheetsFromDB(allDatesInDB);
 
     // Проверяем есть ли в бд сегодня
-    const today = getToday();
+    const today: string = getToday();
     console.log(`[MAIN] Today: ${today}`);
-    const dataFromApi = await getDataFromApi(today);
+    const dataFromApi: ApiResponse = await getDataFromApi(today);
+    // {
+    //     response: {
+    //         data: { dtNextBox: '', dtTillMax: '2025-12-02', warehouseList: [] }
+    //     }
+    // }
 
     // Проверить «есть ли в БД сегодня»
     // «есть ли в БД сегодня» Если нет → вставить → обновить таблицу
     if (!allDatesInDB.includes(today)) {
         // Если нет → вставить → обновить таблицу
         console.log("[MAIN] No data for today — inserting.");
-        dataFromApi?.response?.data?.warehouseList?.forEach((item: any) => {
-            const { warehouseName, geoName, boxDeliveryLiter } = item;
-            const hash = hashObject({ warehouseName, geoName, boxDeliveryLiter });
 
-            const warehouse = {
+        // Теперь TS знает, что есть response.data.warehouseList
+        const warehouseList = dataFromApi.response.data.warehouseList;
+        console.log(warehouseList);
+
+        // Преобразование для БД
+        const warehouseListForDb: WarehouseForInsert[] = warehouseList.map((item) => {
+            const hash = hashObject({ warehouseName: item.warehouseName, geoName: item.geoName, boxDeliveryLiter: item.boxDeliveryLiter });
+            
+            const warehouse: WarehouseForInsert = warehouseInsertSchema.parse({
                 warehouseName: item.warehouseName || null,
                 geoName: item.geoName || null,
                 boxDeliveryLiter: clean.float(item.boxDeliveryLiter),
-
                 recordTime: getTime(),
                 recordDate: today,
-
                 hash,
-            };
-            pushWarehouse(warehouse);
+            })
+            return warehouse
         });
+        // Вставка
+        for (const warehouse of warehouseListForDb) {
+            await pushWarehouse(warehouse);
+        }
+
         //Обновить таблицу (Сдвигаем что есть вниз, добавляем новые сверху)
         console.log("[MAIN] Inserted new entries for today.");
         //--------------------------------------------------------------
