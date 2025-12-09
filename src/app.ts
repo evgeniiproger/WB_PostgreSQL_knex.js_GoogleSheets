@@ -15,15 +15,13 @@ pg.types.setTypeParser(1082, (value) => value);
 pg.types.setTypeParser(1083, (value) => value);
 
 async function main() {
-    type Row = (string | number | null)[];
-
     const clean = {
-        float: (v: string | null | undefined) => (!v || v === "-" ? null : Number(v.toString().replace(",", "."))),
-        int: (v: string | null | undefined) => (!v || v === "-" ? null : parseInt(v, 10)),
-        date: (v: string | null | undefined) => (!v || v === "-" ? null : v),
+        float: (v: string | null | undefined): number | null => (!v || v === "-" ? null : Number(v.toString().replace(",", "."))),
+        int: (v: string | null | undefined): number | null => (!v || v === "-" ? null : parseInt(v, 10)),
+        date: (v: string | null | undefined): string | null => (!v || v === "-" ? null : v),
     };
 
-    async function pushWarehouse(warehouse: WarehouseForInsert) {
+    async function pushWarehouse(warehouse: WarehouseForInsert): Promise<void> {
         try {
             await knex("warehouseList").insert(warehouse);
             console.log("[DB] Inserted.");
@@ -38,12 +36,13 @@ async function main() {
     async function getDataFromApi(today: string): Promise<ApiResponse> {
         try {
             console.log("[API] Fetching...");
-            const res = await fetch(`https://common-api.wildberries.ru/api/v1/tariffs/box?date=${today}`, {
-                method: "GET",
-                headers: {
-                    "Authorization": `${env.WILDBERRIES_KEY}`,
-                },
-            });
+            // const res = await fetch(`https://common-api.wildberries.ru/api/v1/tariffs/box?date=${today}`, {
+            //     method: "GET",
+            //     headers: {
+            //         "Authorization": `${env.WILDBERRIES_KEY}`,
+            //     },
+            // });
+            const res = await fetch("https://964a3c49-a63b-402f-87c1-0fc8c7067472.mock.pstmn.io/Housess", {method: "GET"})
             // const resMockData = {
             //         response: {
             //             data: {
@@ -68,7 +67,8 @@ async function main() {
             //         }
             // } satisfies ApiResponse;
 
-            const data = apiResponseSchema.parse(await res.json());
+            const data: ApiResponse = apiResponseSchema.parse(await res.json());
+            // const data: ApiResponse = apiResponseSchema.parse(await res.json());
             console.log("[API] OK");
             return data;
         } catch (err) {
@@ -77,14 +77,15 @@ async function main() {
         }
     }
 
-    async function addDateInSheets(dataDB: any[]) {
+    async function addDateInSheets(dataDB: WarehouseFromDb[]): Promise<void> {
+        type Row = (string | number | null)[];
         const dailyDataForSheets: Row[] = [
             [dataDB[0]?.recordDate],
             ["", "warehouseId", "warehouseName", "geoName", "boxDeliveryLiter", "recordTime", "recordDate"],
             ...dataDB.map((item) => ["", item.warehouseId, item.warehouseName, item.geoName, item.boxDeliveryLiter, item.recordTime, item.recordDate]),
         ];
 
-        const lengthDataForSheets = dataDB.length + 2;
+        const lengthDataForSheets: number = dataDB.length + 2;
         console.log(`[SHEETS] Insert ${lengthDataForSheets} rows...`);
         await Sheets.insertRows(lengthDataForSheets);
 
@@ -92,17 +93,18 @@ async function main() {
         await Sheets.write(dailyDataForSheets);
         console.log("[SHEETS] Updated.");
     }
-    async function deleteDateInSheets(dataDB: any[]) {
-        const numRowsToDelete = dataDB.length + 2;
+
+    async function deleteDateInSheets(dataDB: WarehouseFromDb[]): Promise<void> {
+        const numRowsToDelete: number = dataDB.length + 2;
         console.log(`[SHEETS] Deleting ${numRowsToDelete} rows...`);
 
         await Sheets.deleteRows(numRowsToDelete);
         console.log("[SHEETS] Deleted.");
     }
 
-    async function updateGoogleSheetsFromDB(allDatesInDB: string[]) {
+    async function updateGoogleSheetsFromDB(allDatesInDB: string[]): Promise<void> {
         console.log("[SHEETS] Full rebuild start...");
-        const totalRowsToDelete = await Sheets.getRowCount("Лист1!A:G");
+        const totalRowsToDelete: number = await Sheets.getRowCount("Лист1!A:G");
         if (totalRowsToDelete > 0) {
             console.log(`[SHEETS] Clearing ${totalRowsToDelete} rows...`);
             await Sheets.deleteRows(totalRowsToDelete);
@@ -110,15 +112,15 @@ async function main() {
 
         for (const date of allDatesInDB) {
             console.log(`[SHEETS] Add date ${date}...`);
-            const dataDB = await knex<WarehouseFromDb>("warehouseList").where("recordDate", date).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
-            const checkedData = dataDB.map((row) => warehouseDbSchema.parse(row));
+            const dataDB: WarehouseFromDb[] = await knex<WarehouseFromDb>("warehouseList").where("recordDate", date).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
+            const checkedData: WarehouseFromDb[] = dataDB.map((row) => warehouseDbSchema.parse(row));
             await addDateInSheets(checkedData);
         }
         console.log("[SHEETS] Full rebuild done.");
     }
-    
+
     console.log("[MAIN] Start...");
-    const allDatesInDB: string[] =  await knex("warehouseList").distinct("recordDate").orderBy("recordDate", "asc").pluck("recordDate");
+    const allDatesInDB: string[] = await knex("warehouseList").distinct("recordDate").orderBy("recordDate", "asc").pluck("recordDate");
 
     await updateGoogleSheetsFromDB(allDatesInDB);
 
@@ -130,13 +132,13 @@ async function main() {
     // «есть ли в БД сегодня» Если нет → вставить → обновить таблицу
         console.log("[MAIN] No data for today — inserting.");
 
-        const warehouseList = dataFromApi.response.data.warehouseList;
+        const warehouseList: ApiResponse["response"]["data"]["warehouseList"] = dataFromApi.response.data.warehouseList;
 
         const warehouseListForDb: WarehouseForInsert[] = warehouseList.map((item) => {
-            const hash = hashObject({ warehouseName: item.warehouseName, geoName: item.geoName, boxDeliveryLiter: item.boxDeliveryLiter });
+            const hash: string = hashObject({ warehouseName: item.warehouseName, geoName: item.geoName, boxDeliveryLiter: item.boxDeliveryLiter });
 
             const warehouse: WarehouseForInsert = warehouseInsertSchema.parse({
-                warehouseName: item.warehouseName || null,
+                warehouseName: item.warehouseName,
                 geoName: item.geoName || null,
                 boxDeliveryLiter: clean.float(item.boxDeliveryLiter),
                 recordTime: getTime(),
@@ -152,7 +154,7 @@ async function main() {
 
         console.log("[MAIN] Inserted new entries for today.");
 
-        const dataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
+        const dataDB: WarehouseFromDb[] = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
 
         console.log("[SHEETS] Updating...");
         await addDateInSheets(dataDB);
@@ -162,12 +164,13 @@ async function main() {
     } else {
     // «есть ли в БД сегодня» Если нет(else) → вставить → обновить таблицу
         console.log("[MAIN] Today's data exists — checking changes...");
-        let updatedVariable: Boolean = false;
+        let updatedVariable: boolean = false;
 
-        const dataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
+        const dataDB: WarehouseFromDb[] = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
 
-        const dataAPI: any[] = [];
-        dataFromApi?.response?.data?.warehouseList?.forEach((item: any) => {
+        type APIItem = { warehouseName: string; geoName: string; boxDeliveryLiter: string };
+        const dataAPI: APIItem[] = [];
+        dataFromApi?.response?.data?.warehouseList?.forEach((item) => {
             dataAPI.push({
                 warehouseName: item.warehouseName,
                 geoName: item.geoName,
@@ -175,53 +178,48 @@ async function main() {
             });
         });
 
-        const dbMap = new Map(dataDB.map((item) => [item.warehouseName, item]));
-        const apiNames = new Set(dataAPI.map((item) => item.warehouseName));
+        const dbMap = new Map<string, WarehouseFromDb>(dataDB.map((item) => [item.warehouseName, item]));
+        const apiNames = new Set<string>(dataAPI.map((item) => item.warehouseName));
 
         // 1. UPDATE + INSERT
         for (const apiItem of dataAPI) {
             if (dbMap.has(apiItem.warehouseName)) {
                 // проверяем есть ли такой name в БД (ЕСТЬ)
-                const dbItem = dbMap.get(apiItem.warehouseName); // получаем объект из БД по name
+                const dbItem = dbMap.get(apiItem.warehouseName)!; // получаем объект из БД по name. ! - говорит TS что dbItem не undefined, делаем так потому что has это гарантирует
                 const { warehouseName, geoName, boxDeliveryLiter } = apiItem;
-                const hashAPI = hashObject({ warehouseName, geoName, boxDeliveryLiter });
+                const hashAPI: string = hashObject({ warehouseName, geoName, boxDeliveryLiter });                
+                    if (dbItem.hash !== hashAPI) {
+                        // проверяем хеши, если значения разные обновляем бд по айди
+                        console.log(`[DB] Update id=${dbItem.warehouseId}`);
+                        const newWarehouse: WarehouseForInsert = {
+                            warehouseName: apiItem.warehouseName,
+                            geoName: apiItem.geoName || null,
+                            boxDeliveryLiter: clean.float(apiItem.boxDeliveryLiter),
+                            recordTime: getTime(),
+                            recordDate: getToday(),
+                            hash: hashAPI,
+                        };
 
-                if (dbItem.hash !== hashAPI) {
-                    // проверяем хеши, если значения разные обновляем бд по айди
-                    console.log(`[DB] Update id=${dbItem.warehouseId}`);
-                    const newWarehouse = {
-                        warehouseName: apiItem.warehouseName || null,
-                        geoName: apiItem.geoName || null,
-                        boxDeliveryLiter: clean.float(apiItem.boxDeliveryLiter),
-
-                        recordTime: getTime(),
-                        recordDate: getToday(),
-
-                        hash: hashAPI,
-                    };
-
-                    await knex("warehouseList")
-                        .where("warehouseId", dbItem.warehouseId)
-                        .update(newWarehouse)
-                        .catch((err) => {
-                            console.error("[DB] Update error:", err);
-                        });
-                    updatedVariable = true;
-                }
+                        await knex("warehouseList")
+                            .where("warehouseId", dbItem.warehouseId)
+                            .update(newWarehouse)
+                            .catch((err) => {
+                                console.error("[DB] Update error:", err);
+                            });
+                        updatedVariable = true;
+                    }
             } else {
                 // проверяем есть ли такой name в БД (НЕТУ), значит это новый склад, добавляем в БД
                 console.log(`[DB] Insert new: ${apiItem.warehouseName}`);
                 const { warehouseName, geoName, boxDeliveryLiter } = apiItem;
-                const hashAPI = hashObject({ warehouseName, geoName, boxDeliveryLiter });
+                const hashAPI: string = hashObject({ warehouseName, geoName, boxDeliveryLiter });
 
-                const newWarehouse = {
-                    warehouseName: apiItem.warehouseName || null,
-                    geoName: apiItem.geoName || null,
-                    boxDeliveryLiter: clean.float(apiItem.boxDeliveryLiter),
-
+                const newWarehouse: WarehouseForInsert = {
+                    warehouseName: warehouseName,
+                    geoName: geoName || null,
+                    boxDeliveryLiter: clean.float(boxDeliveryLiter),
                     recordTime: getTime(),
                     recordDate: getToday(),
-
                     hash: hashAPI,
                 };
 
@@ -254,9 +252,9 @@ async function main() {
         console.log("[MAIN] DB OK");
 
     // Перерисовываем новый день гугл таблицы (только, если изменяли БД)
-    if(updatedVariable){
+    if(updatedVariable) {
             console.log("[MAIN] Today's data changed — updating Google Sheets.");
-            const updatedDataDB = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
+            const updatedDataDB: WarehouseFromDb[] = await knex("warehouseList").where("recordDate", today).orderByRaw(`"${SORTFULL}" ASC NULLS FIRST`);
             await deleteDateInSheets(dataDB);
             await addDateInSheets(updatedDataDB);
             updatedVariable = false;
